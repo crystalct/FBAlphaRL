@@ -6,12 +6,16 @@
 ifeq ($(strip $(PSL1GHT)),)
 $(error "Please set PSL1GHT in your environment. export PSL1GHT=<path>")
 endif
-ifeq ($(strip $(PORTLIBS)),)
-$(error "Please set PORTLIBS in your environment.")
-endif
+
+ICON0		:=	$(CURDIR)/../pkg/ICON0.PNG
+SFOXML		:=	$(CURDIR)/sfo.xml
+
+SCETOOL_FLAGS	?=	--self-app-version=0001000000000000  --sce-type=SELF --compress-data=TRUE --self-add-shdrs=TRUE --skip-sections=FALSE --key-revision=1 \
+					--self-auth-id=1010000001000003 --self-vendor-id=01000002 --self-fw-version=0003004000000000 \
+					--self-ctrl-flags 4000000000000000000000000000000000000000000000000000000000000002 \
+					--self-cap-flags 00000000000000000000000000000000000000000000007B0000000100000000
 
 include $(PSL1GHT)/ppu_rules
-RETROARCH_PATH := ../tmpwork/Retroarch
 
 #---------------------------------------------------------------------------------
 # TARGET is the name of the output
@@ -23,23 +27,21 @@ TARGET		:=	$(notdir $(CURDIR))
 BUILD		:=	build
 SOURCES		:=	source source/ftp
 DATA		:=	data
+SHADERS		:=	shaders
 INCLUDES	:=	include
-PKGFILES	:=	$(CURDIR)/pkgfiles
+PKGFILES	:=	$(CURDIR)/../pkg
 
 TITLE		:=	FB NEO RL Plus
 APPID		:=	FBNE00123
-CONTENTID	:=	FBNEOO-$(APPID)_00-0000000000000000
-ICON0		:=	ICON0.PNG
-ICON1		:=	ICON1.PAM
-PIC1		:=	PIC1.PNG
-SFOXML		:=	sfo.xml
-APP_VER		:=	2.13
+CONTENTID	:=	UP0001-$(APPID)_00-0000000000000000
+APP_VER		:=	2.20
+TO_DAY		:=	$(shell date +%F)
 
 #---------------------------------------------------------------------------------
 # options for code generation
 #---------------------------------------------------------------------------------
 
-CFLAGS		=	-O2 -Wall -mcpu=cell $(MACHDEP) $(INCLUDE)
+CFLAGS		=	-Wall -mcpu=cell $(MACHDEP) $(INCLUDE) -O2 -D_APP_VER=$(APP_VER)
 CXXFLAGS	=	$(CFLAGS)
 
 LDFLAGS		=	$(MACHDEP) -Wl,-Map,$(notdir $@).map
@@ -47,15 +49,15 @@ LDFLAGS		=	$(MACHDEP) -Wl,-Map,$(notdir $@).map
 #---------------------------------------------------------------------------------
 # any extra libraries we wish to link with the project
 #---------------------------------------------------------------------------------
-LIBS	:=	-lgcm_sys -lrsx -lcairo -lsysutil -lio -laudioplayer -lmpg123 -logg \
-			-lm -lnetctl -lnet -lfreetype -lzip -lz -lpixman-1 \
-			-lrt -llv2 -lsysmodule -lpng -lpngdec -ljpgdec -lps3sqlite -lsysfs -lspu_sound -laudio -I$(PORTLIBS)/modules/lib/spu_soundmodule.bin.a
+LIBS	:=	-lsimdmath -lrsx -lgcm_sys -lio -lsysutil -lrt -llv2 -lm -lsysmodule -lpngdec \
+			-lps3sqlite -lsysfs -lspu_sound -laudio -lspu_soundmodule -laudioplayer \
+			-lfreetype -lmpg123 -logg -lnet -lnetctl -lzip -lz -lbdffnt
 
 #---------------------------------------------------------------------------------
 # list of directories containing libraries, this must be the top level containing
 # include and lib
 #---------------------------------------------------------------------------------
-LIBDIRS	:= $(PORTLIBS)
+LIBDIRS	:=
 
 #---------------------------------------------------------------------------------
 # no real need to edit anything past this point unless you need to add additional
@@ -67,7 +69,8 @@ ifneq ($(BUILD),$(notdir $(CURDIR)))
 export OUTPUT	:=	$(CURDIR)/$(TARGET)
 
 export VPATH	:=	$(foreach dir,$(SOURCES),$(CURDIR)/$(dir)) \
-					$(foreach dir,$(DATA),$(CURDIR)/$(dir))
+					$(foreach dir,$(DATA),$(CURDIR)/$(dir)) \
+					$(foreach dir,$(SHADERS),$(CURDIR)/$(dir))
 
 export DEPSDIR	:=	$(CURDIR)/$(BUILD)
 
@@ -80,12 +83,12 @@ CFILES		:=	$(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.c)))
 CPPFILES	:=	$(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.cpp)))
 sFILES		:=	$(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.s)))
 SFILES		:=	$(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.S)))
-BINFILES	:=	$(foreach dir,$(DATA),$(notdir $(wildcard $(dir)/*.bin)))
-PNGFILES	:=	$(foreach dir,$(DATA),$(notdir $(wildcard $(dir)/*.png)))
-JPGFILES	:=	$(foreach dir,$(DATA),$(notdir $(wildcard $(dir)/*.jpg)))
-TTFFILES	:=	$(foreach dir,$(DATA),$(notdir $(wildcard $(dir)/*.ttf)))
+BINFILES	:=	$(foreach dir,$(DATA),$(notdir $(wildcard $(dir)/*.*)))
 VCGFILES	:=	$(foreach dir,$(SHADERS),$(notdir $(wildcard $(dir)/*.vcg)))
 FCGFILES	:=	$(foreach dir,$(SHADERS),$(notdir $(wildcard $(dir)/*.fcg)))
+
+VPOFILES	:=	$(VCGFILES:.vcg=.vpo)
+FPOFILES	:=	$(FCGFILES:.fcg=.fpo)
 
 #---------------------------------------------------------------------------------
 # use CXX for linking C++ projects, CC for standard C
@@ -97,31 +100,26 @@ else
 endif
 
 export OFILES	:=	$(addsuffix .o,$(BINFILES)) \
-			$(addsuffix .o,$(TTFFILES)) \
-			$(addsuffix .o,$(VPOFILES)) \
-			$(addsuffix .o,$(FPOFILES)) \
-			$(addsuffix .o,$(PNGFILES)) \
-			$(addsuffix .o,$(JPGFILES)) \
+					$(addsuffix .o,$(VPOFILES)) \
+					$(addsuffix .o,$(FPOFILES)) \
 					$(CPPFILES:.cpp=.o) $(CFILES:.c=.o) \
 					$(sFILES:.s=.o) $(SFILES:.S=.o)
 
 #---------------------------------------------------------------------------------
 # build a list of include paths
 #---------------------------------------------------------------------------------
-export INCLUDE	:=	-I$(PORTLIBS)/include/freetype2 \
-			$(foreach dir,$(INCLUDES), -I$(CURDIR)/$(dir)) \
+export INCLUDE	:=	$(foreach dir,$(INCLUDES), -I$(CURDIR)/$(dir)) \
 					$(foreach dir,$(LIBDIRS),-I$(dir)/include) \
-					$(LIBPSL1GHT_INC) \
-					-I$(CURDIR)/$(BUILD)
+					$(LIBPSL1GHT_INC) -I$(PORTLIBS)/include/ -I$(PORTLIBS)/modules \
+					-I$(PORTLIBS)/modules/include -I$(CURDIR)/$(BUILD) -I$(PORTLIBS)/include/freetype2
 
 #---------------------------------------------------------------------------------
 # build a list of library paths
 #---------------------------------------------------------------------------------
 export LIBPATHS	:=	$(foreach dir,$(LIBDIRS),-L$(dir)/lib) \
-					$(LIBPSL1GHT_LIB) -L$(PORTLIBS)/lib \
+					$(LIBPSL1GHT_LIB) -L$(PORTLIBS)/lib -L$(PORTLIBS)/modules/lib
 
 export OUTPUT	:=	$(CURDIR)/$(TARGET)
-
 .PHONY: $(BUILD) clean
 
 #---------------------------------------------------------------------------------
@@ -132,46 +130,22 @@ $(BUILD):
 #---------------------------------------------------------------------------------
 clean:
 	@echo clean ...
-	@rm -fr $(BUILD) *.elf *.BIN *.SELF *.self *.pkg *~ */*~
+	@rm -fr $(BUILD) $(OUTPUT).*elf $(OUTPUT)*.pkg $(PKGFILES)/USRDIR/RELOAD.SELF $(PKGFILES)/USRDIR/EBOOT.BIN
 
 #---------------------------------------------------------------------------------
 run:
 	ps3load $(OUTPUT).self
 
 #---------------------------------------------------------------------------------
-pkg: npdrm
-	$(VERB) echo building pkg ... $(notdir $@)
-	$(VERB) cp -f $(CURDIR)/../EBOOT.BIN $(CURDIR)/../pkg/USRDIR/EBOOT.BIN
-	$(VERB) cp -f $(CURDIR)/../$(TARGET).self $(CURDIR)/../pkg/USRDIR/RELOAD.SELF
-	$(VERB) $(SFO) --title "$(TITLE)" --appid "$(APPID)" -f $(SFOXML) $(CURDIR)/../pkg/PARAM.SFO
-	$(VERB) $(PKG) --contentid $(CONTENTID) $(CURDIR)/../pkg/ $(TARGET)_$(APP_VER).pkg >> /dev/null
-#---------------------------------------------------------------------------------
+pkg1:	$(BUILD) $(OUTPUT).pkg
+pkg2:	$(BUILD)
+pkg3:
+	@cp $(OUTPUT).self $(PKGFILES)/USRDIR/RELOAD.SELF
+pkg4:
+	@mv $(OUTPUT).pkg $(OUTPUT)_v$(APP_VER)_$(TO_DAY).pkg
+pkg:	pkg2 pkg3 pkg1 pkg4
 
-pkgsnes:
-	$(VERB) echo building SNES upgrade pkg ... $(notdir $@)
-	$(VERB) cp -f $(RETROARCH_PATH)/retroarch_ps3.elf $(CURDIR)/snes9x.elf
-	$(VERB) bin/make_self_wc.exe $(CURDIR)/snes9x.elf $(CURDIR)/../pkgSnes/USRDIR/cores/snes9x.SELF
-	$(VERB) $(SFO) --title "$(TITLE)" --appid "$(APPID)"
-	$(VERB) $(PKG) --contentid $(CONTENTID) $(CURDIR)/../pkgSnes/ $(TARGET)_$(APP_VER)_snes_upgrade.pkg >> /dev/null
 #---------------------------------------------------------------------------------
-
-pkgmd:
-	$(VERB) echo building Mega Drive upgrade pkg ... $(notdir $@)
-	$(VERB) cp -f $(RETROARCH_PATH)/retroarch_ps3.elf $(CURDIR)/genesis_plus_gx.elf
-	$(VERB) bin/make_self_wc.exe $(CURDIR)/genesis_plus_gx.elf $(CURDIR)/../pkgMD/USRDIR/cores/genesis_plus_gx.SELF
-	$(VERB) $(SFO) --title "$(TITLE)" --appid "$(APPID)"
-	$(VERB) $(PKG) --contentid $(CONTENTID) $(CURDIR)/../pkgMD/ $(TARGET)_$(APP_VER)_megadrive_upgrade.pkg >> /dev/null
-#---------------------------------------------------------------------------------
-
-pkgAmiga:
-	$(VERB) echo building Amiga upgrade pkg ... $(notdir $@)
-	$(VERB) $(SFO) --title "$(TITLE)" --appid "$(APPID)"
-	$(VERB) $(PKG) --contentid $(CONTENTID) $(CURDIR)/../pkgAmiga/ $(TARGET)_$(APP_VER)_amiga_upgrade.pkg >> /dev/null
-#---------------------------------------------------------------------------------
-
-npdrm: $(BUILD)
-	@$(SELF_NPDRM) $(SCETOOL_FLAGS) --np-content-id=$(CONTENTID) --encrypt $(BUILDDIR)/$(basename $(notdir $(OUTPUT))).elf $(BUILDDIR)/../EBOOT.BIN
-	$(VERB) cp -f $(CURDIR)/$(TARGET).self $(CURDIR)/RELOAD.SELF
 else
 
 DEPENDS	:=	$(OFILES:.o=.d)
@@ -191,12 +165,6 @@ $(OUTPUT).elf:	$(OFILES)
 	@$(bin2o)
 
 #---------------------------------------------------------------------------------
-%.ttf.o	:	%.ttf
-#---------------------------------------------------------------------------------
-	@echo $(notdir $<)
-	@$(bin2o)
-
-#---------------------------------------------------------------------------------
 %.vpo.o	:	%.vpo
 #---------------------------------------------------------------------------------
 	@echo $(notdir $<)
@@ -204,17 +172,6 @@ $(OUTPUT).elf:	$(OFILES)
 
 #---------------------------------------------------------------------------------
 %.fpo.o	:	%.fpo
-#---------------------------------------------------------------------------------
-	@echo $(notdir $<)
-	@$(bin2o)
-
-#---------------------------------------------------------------------------------
-%.jpg.o	:	%.jpg
-#---------------------------------------------------------------------------------
-	@echo $(notdir $<)
-	@$(bin2o)
-#---------------------------------------------------------------------------------
-%.png.o	:	%.png
 #---------------------------------------------------------------------------------
 	@echo $(notdir $<)
 	@$(bin2o)

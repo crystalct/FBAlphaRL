@@ -1,0 +1,16 @@
+void main(float4 color : COLOR0,
+		  float2 texcoord : TEXCOORD0,
+		  
+		  uniform sampler2D texture,
+		  
+		  out float4 oColor : COLOR0
+		 )
+{
+	float alpha = tex2D(texture, texcoord).w;
+	if(alpha <= 0.5f) {
+		oColor = float4(0.0f, 0.0f, 0.0f, 0.0f);
+	} else {
+		oColor.rgb = color.rgb;
+		oColor.a = color.a;
+	}
+}

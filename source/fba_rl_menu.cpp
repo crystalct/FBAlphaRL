@@ -1,7 +1,7 @@
 // =======================================================================
 // UI / MENUS
 
-#include "main.h"
+#include "capp.h"
 #include "misc.h"
 #include <zip.h>
 
@@ -442,19 +442,29 @@ int getRominfo(FILE* fp, char* szRomset, FBA_ROMINFO *rinfo)
 
 void c_fbaRL::InitRomInfoMenu()
 {
-	int nCols;
+	int nCols=0;
 	char *line = NULL;
     char *posB, *posE1, *posE2;
     char buff[258];
     char intxt[110];
     char *in, *out;
-	if (app.state.displayMode.resolution == 1)
-        nCols = 94;
-    else
-        nCols = 105;
+	
+	switch (app.state.displayMode.resolution) {
+		case VIDEO_RESOLUTION_720:
+				nCols = 83;
+				break;
+		case VIDEO_RESOLUTION_1080:
+				nCols = 83;
+				break;
+		case VIDEO_RESOLUTION_576:
+		case VIDEO_RESOLUTION_480:
+				nCols = 57;
+				break;
+	}
+
 	if(nFilteredGames < 1) return;
 
-	rominfo_menu = new c_Menu(38);
+	rominfo_menu = new c_Menu(34);
 
     hashmap_map *drvmap;
     FBA_DRV *fba_drv;

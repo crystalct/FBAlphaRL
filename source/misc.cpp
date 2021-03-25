@@ -8,9 +8,10 @@
 #include <string>
 #include <stdlib.h>
 #include <sys/dirent.h>
-#include "main.h"
+#include "misc.h"
 #include <sysutil/msg.h>
 #include <sys/stat.h>
+#include "fba_rl.h"
 
 // Struct compare function for QSORT
 // [v1.01] should now be memory leak free

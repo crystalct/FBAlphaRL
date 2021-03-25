@@ -1,7 +1,7 @@
 // =======================================================================
 // UTILITY MODULES
 
-#include "main.h"
+#include "capp.h"
 #include "misc.h"
 #include <zip.h>
 #include <sys/process.h>
@@ -84,7 +84,7 @@ void c_fbaRL::MakeAmigaCFG(char *romPath, char *subsystem, char** argv)
 
     bool ipf = false;
 
-    int f = 0;
+    uint8_t f = 0;
     for (i = 0; i < (uint32_t)zip_get_num_files(za); i++) {
                 if (zip_stat_index(za, i, 0, &sb) == 0) {
 

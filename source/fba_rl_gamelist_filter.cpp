@@ -1,7 +1,7 @@
 // =======================================================================
 // GAMELIST (FILTERS)
 
-#include "main.h"
+#include "capp.h"
 static char pszFilter[64];
 
 char szSysFilter[MASKALL][256] = {

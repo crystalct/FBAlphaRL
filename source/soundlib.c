@@ -2,7 +2,7 @@
 #include <stdlib.h>
 #include <assert.h>
 #include <unistd.h>
-#include "audioplayer.h"
+#include "soundlib/audioplayer.h"
 
 int SND_Init_cpp(u32 spu) {
 

@@ -3,13 +3,14 @@
 #include <string>
 #include <vector>
 #include "misc.h"
-#include "main.h"
+#include "capp.h"
 #include "hashmap.h"
-#include "spu_soundlib.h"
-#include "audioplayer.h"
+#include "soundlib/spu_soundlib.h"
+#include "soundlib/audioplayer.h"
 #include <sysutil/msg.h>
 #include <sysutil/sysutil.h>
 #include <sys/process.h>
+#include <sys/dirent.h>
 
 /*static vs32 dialog_action2 = 0;
 
@@ -38,7 +39,7 @@ void c_fbaRL::InputFrame()
 	if(bProcessingGames) return;
 
 	static int nSelInputFrame = 0;
-
+	static u64 start_seconds = 0, seconds, start_nseconds, nseconds;
 
 	// ------------------------------------------------------
 	// Navigation UP/DOWN with delay
@@ -847,52 +848,74 @@ void c_fbaRL::InputFrame()
 	// ------------------------------------------------------
 	// [START]
 
-	if(!app.mIsButtPressed[BT_START] && app.buttPressedNow[BT_START])
-	{
-		switch(nSection)
-		{
-			case SECTION_FILEBROWSER:
-			{
-				if(filebrowser->nTotalItem < 1) break;
+	if (!app.mIsButtPressed[BT_START] && app.buttPressedNow[BT_START]) {
+		sysGetCurrentTime(&start_seconds, &start_nseconds);
+		return;
+	}
 
-				int nMenuItem = options_menu->nSelectedItem;
-
-				// Rom Paths (directories)
-				if(nFileBrowserType == 0 && filebrowser->item[filebrowser->nSelectedItem]->nType == DT_DIR)
-				{
-					if(nMenuItem > MASKFAVORITE+MENU_OPT_FILTER_START && nMenuItem <= MASKFAVORITE+MENU_OPT_FILTER_START+12)
-					{
-						int nRomPath = nMenuItem-(MASKFAVORITE+MENU_OPT_FILTER_START+1);
-						strcpy(g_opt_szROMPaths[nRomPath], filebrowser->item[filebrowser->nSelectedItem]->szPath);
-					}
-					nStatus = STATUS_ROMPATH_CHANGED;
-				}
-
-				// Input Preset Paths (CFG)
-				if(nFileBrowserType == 1 && filebrowser->item[filebrowser->nSelectedItem]->nType == DT_REG)
-				{
-
-					if(nMenuItem > MASKFAVORITE+MENU_OPT_FILTER_START+12 && nMenuItem <= MASKFAVORITE+MENU_OPT_FILTER_START+12+25)
-					{
-						int nCfgPath = nMenuItem-(MASKFAVORITE+MENU_OPT_FILTER_START+12+1);
-						strcpy(g_opt_szInputCFG[nCfgPath], filebrowser->item[filebrowser->nSelectedItem]->szPath);
-					}
-				}
-
-				nSection = SECTION_OPTIONS;
-				EndFileBrowser();
-
-				iniWrite();
-				break;
-			}
-
-			case SECTION_GAMELIST:
-			{
-				nStatus = STATUS_ROMSCAN_DLG;
-				break;
-			}
+	if (app.mIsButtPressed[BT_START] && app.buttPressedNow[BT_START] && start_seconds) {
+		sysGetCurrentTime(&seconds, &nseconds);
+		if ((seconds - start_seconds) * 1000000000L + (nseconds - start_nseconds) > 1000000000L) {
+			//[START] HOLD
+			
+			start_seconds = 0;
 		}
 	}
+		
+
+	if (app.mIsButtPressed[BT_START] && !app.buttPressedNow[BT_START] && start_seconds) {
+		if ((seconds - start_seconds) * 1000000000L + (nseconds - start_nseconds) < 1000000000L) {
+			//[START] PRESSED
+
+			switch (nSection)
+			{
+				case SECTION_FILEBROWSER:
+				{
+					if (filebrowser->nTotalItem < 1) break;
+
+					int nMenuItem = options_menu->nSelectedItem;
+
+					// Rom Paths (directories)
+					if (nFileBrowserType == 0 && filebrowser->item[filebrowser->nSelectedItem]->nType == DT_DIR)
+					{
+						if (nMenuItem > MASKFAVORITE + MENU_OPT_FILTER_START && nMenuItem <= MASKFAVORITE + MENU_OPT_FILTER_START + 12)
+						{
+							int nRomPath = nMenuItem - (MASKFAVORITE + MENU_OPT_FILTER_START + 1);
+							strcpy(g_opt_szROMPaths[nRomPath], filebrowser->item[filebrowser->nSelectedItem]->szPath);
+						}
+						nStatus = STATUS_ROMPATH_CHANGED;
+					}
+
+					// Input Preset Paths (CFG)
+					if (nFileBrowserType == 1 && filebrowser->item[filebrowser->nSelectedItem]->nType == DT_REG)
+					{
+
+						if (nMenuItem > MASKFAVORITE + MENU_OPT_FILTER_START + 12 && nMenuItem <= MASKFAVORITE + MENU_OPT_FILTER_START + 12 + 25)
+						{
+							int nCfgPath = nMenuItem - (MASKFAVORITE + MENU_OPT_FILTER_START + 12 + 1);
+							strcpy(g_opt_szInputCFG[nCfgPath], filebrowser->item[filebrowser->nSelectedItem]->szPath);
+						}
+					}
+
+					nSection = SECTION_OPTIONS;
+					EndFileBrowser();
+
+					iniWrite();
+					break;
+				}
+
+				case SECTION_GAMELIST:
+				{
+					nStatus = STATUS_ROMSCAN_DLG;
+					break;
+				}
+			}
+				
+			start_seconds = 0;
+		}
+	}
+
+	
 
 
 	// ------------------------------------------------------
@@ -926,19 +949,18 @@ void c_fbaRL::InputFrame()
 
             StopAudio();
             ++app.trackID;
-            if (app.trackID == app.tracks.end())
-                app.trackID = app.tracks.begin();
+            if (app.trackID == app.tracks.end()) app.trackID = app.tracks.begin();
 
-                fclose(app.ftrack);
-                char tpath[256];
-                sprintf(tpath, "/dev_hdd0/game/FBNE00123/USRDIR/soundtracks/%s", (*app.trackID).c_str());
-                app.ftrack = fopen(tpath, "r");
-                if (app.ftrack) {
+            fclose(app.ftrack);
+            char tpath[256];
+            sprintf(tpath, "/dev_hdd0/game/FBNE00123/USRDIR/soundtracks/%s", (*app.trackID).c_str());
+            app.ftrack = fopen(tpath, "r");
+            if (app.ftrack) {
                     //printf("Play track: %s\n", (*app.trackID).c_str());
                     PlayAudiofd(app.ftrack, 0,  AUDIO_INFINITE_TIME);
 
-                    }
             }
+         }
 
 	}
 

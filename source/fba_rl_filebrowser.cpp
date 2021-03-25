@@ -3,7 +3,7 @@
 #include <lv2/sysfs.h>
 #include <sys/dirent.h>
 #include <sys/stat.h>
-#include "main.h"
+#include "capp.h"
 #include "misc.h"
 
 

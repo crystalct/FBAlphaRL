@@ -1,7 +1,7 @@
 // ---------------------------------------------------------------------
 // FB Neo Retro Loader Plus (CaptainCPS-X, 2013) - (CrystalCT, 2020)
 // ---------------------------------------------------------------------
-#include "main.h"
+#include "capp.h"
 #include <sys/file.h>
 
 char g_opt_szROMPaths[NDIRPATH][2048] = {
@@ -54,12 +54,12 @@ char g_opt_szInputCFG[][2048] = {
 };
 
 char g_opt_szTextures[][2048] = {
-	"/dev_hdd0/game/FBNE00123/USRDIR/cores/borders/default/MAIN_MENU",
-	"/dev_hdd0/game/FBNE00123/USRDIR/cores/borders/default/GAME_LIST",
-	"/dev_hdd0/game/FBNE00123/USRDIR/cores/borders/default/ZIP_INFO",
-	"/dev_hdd0/game/FBNE00123/USRDIR/cores/borders/default/ROM_INFO",
-	"/dev_hdd0/game/FBNE00123/USRDIR/cores/borders/default/OPTIONS_MENU",
-	"/dev_hdd0/game/FBNE00123/USRDIR/cores/borders/default/FILE_BROWSER",
+	"/dev_hdd0/game/FBNE00123/USRDIR/cores/borders/default/MAIN_MENU.PNG",
+	"/dev_hdd0/game/FBNE00123/USRDIR/cores/borders/default/GAME_LIST.PNG",
+	"/dev_hdd0/game/FBNE00123/USRDIR/cores/borders/default/ZIP_INFO.PNG",
+	"/dev_hdd0/game/FBNE00123/USRDIR/cores/borders/default/ROM_INFO.PNG",
+	"/dev_hdd0/game/FBNE00123/USRDIR/cores/borders/default/OPTIONS_MENU.PNG",
+	"/dev_hdd0/game/FBNE00123/USRDIR/cores/borders/default/FILE_BROWSER.PNG",
 	"/dev_hdd0/game/FBNE00123/USRDIR/cores/borders/default/PREVIEW.PNG",
 	"/dev_hdd0/game/FBNE00123/USRDIR/cores/borders/default/TITLES.PNG"
 };
@@ -101,6 +101,32 @@ bool g_opt_bCustomSysFilter[MASKCUSTOM+1] =
 
 bool g_opt_bUseUNIBIOS = false;
 
+void cfgUpdateByte(const char* cfgfile, const char* option, char value) {
+	char pathfilein[128];
+	strcpy(pathfilein, FBNEO_PATH);
+	strcat(pathfilein, cfgfile);
+	FILE* fin = NULL;
+	fin = fopen(pathfilein, "r+");
+	if (fin == 0) {
+		printf("Errore nel read\n");
+		return;
+	}
+
+	int maximumLineLength = 256;
+	char* lineBuffer = (char*)malloc(sizeof(char) * maximumLineLength);
+	
+	while (fgets(lineBuffer, maximumLineLength, fin)) {
+		if (strstr(lineBuffer, option) != NULL) {
+			fseek(fin, -3, SEEK_CUR);
+			fwrite(&value, 1, 1, fin);
+			break;
+		}
+	}
+	if (lineBuffer)
+		SAFE_FREE(lineBuffer);
+	fclose(fin);
+}
+
 int cfgWrite(const char *cfgfile, const char *option, const char *value) {
     char pathfilein[128];
     char pathfileout[128];
@@ -123,7 +149,7 @@ int cfgWrite(const char *cfgfile, const char *option, const char *value) {
         }
     int maximumLineLength = 256;
     char *lineBuffer = (char *)malloc(sizeof(char) * maximumLineLength);
-    char * line = NULL;
+    //char * line = NULL;
 
     while(fgets(lineBuffer, maximumLineLength, fin)) {
         if (strstr(lineBuffer, option) != NULL) {
@@ -139,8 +165,8 @@ int cfgWrite(const char *cfgfile, const char *option, const char *value) {
     }
     fclose(fin);
     fclose(fout);
-    if (line)
-        free(line);
+    if (lineBuffer)
+        SAFE_FREE(lineBuffer);
 
     if (sysLv2FsUnlink(pathfilein))
         return 0;

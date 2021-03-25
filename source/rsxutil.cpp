@@ -1,224 +1,342 @@
-/*
- * This software is distributed under the terms of the GNU General Public
- * License ("GPL") version 3, as published by the Free Software Foundation.
- */
-
-#include <ppu-lv2.h>
 #include <stdio.h>
-#include <malloc.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <malloc.h>
+#include <ppu-types.h>
+
+#include <sys/event_queue.h>
 #include <sysutil/video.h>
-#include <rsx/gcm_sys.h>
-#include <rsx/rsx.h>
-#include <io/pad.h>
-#include <time.h>
-#include <cairo/cairo.h>
-#include <math.h>
 
 #include "rsxutil.h"
 
-#define GCM_LABEL_INDEX		255
+videoResolution vResolution;
 
-static void waitRSXIdle(gcmContextData *context);
+u32 curr_fb = 0;
 
-static u32 depth_pitch;
-static u32 depth_offset;
-static u32 *depth_buffer;
+u32 display_width;
+u32 display_height;
 
-void
-waitFlip ()
+u32 depth_pitch;
+u32 depth_offset;
+void *depth_buffer;
+
+u32 color_pitch;
+u32 color_offset[FRAME_BUFFER_COUNT];
+void *color_buffer[FRAME_BUFFER_COUNT];
+
+void *state_buffer;
+u32 state_offset;
+
+f32 aspect_ratio;
+
+u32 fbOnDisplay = 0;
+u32 fbFlipped = 0;
+bool fbOnFlip = false;
+sys_event_queue_t flipEventQueue;
+sys_event_port_t flipEventPort;
+
+gcmSurface surface;
+
+static u32 sLabelVal = 1;
+
+static u32 sResolutionIds[] = {
+    VIDEO_RESOLUTION_1080,
+    VIDEO_RESOLUTION_720,
+    VIDEO_RESOLUTION_576,
+    VIDEO_RESOLUTION_480
+};
+static size_t RESOLUTION_ID_COUNT = sizeof(sResolutionIds)/sizeof(u32);
+
+extern "C" {
+static void flipHandler(const u32 head)
 {
-  while (gcmGetFlipStatus () != 0)
-    usleep (200);  /* Sleep, to not stress the cpu. */
-  gcmResetFlipStatus ();
+    (void)head;
+    u32 v = fbFlipped;
+
+    for (u32 i = fbOnDisplay; i != v; i=(i + 1)%FRAME_BUFFER_COUNT) {
+        *((vu32*) gcmGetLabelAddress(GCM_BUFFER_STATUS_INDEX + i)) = BUFFER_IDLE;
+    }
+    fbOnDisplay = v;
+    fbOnFlip = false;
+
+    sysEventPortSend(flipEventPort, 0, 0, 0);
 }
 
-int
-flip (gcmContextData *context, s32 buffer)
+static void vblankHandler(const u32 head)
 {
-  if (gcmSetFlip (context, buffer) == 0) {
-    rsxFlushBuffer (context);
-    // Prevent the RSX from continuing until the flip has finished.
-    gcmSetWaitFlip (context);
+    (void)head;
+    u32 data;
+    u32 bufferToFlip;
+    u32 indexToFlip;
 
-    return TRUE;
-  }
-  return FALSE;
+    data = *((vu32*) gcmGetLabelAddress(GCM_PREPARED_BUFFER_INDEX));
+    bufferToFlip = (data >> 8);
+    indexToFlip = (data & 0x07);
+
+    if (!fbOnFlip) {
+        if (bufferToFlip != fbOnDisplay) {
+            s32 ret = gcmSetFlipImmediate(indexToFlip);
+            if (ret != 0) {
+                printf("flip immediate failed\n");
+                return;
+            }
+            fbFlipped = bufferToFlip;
+            fbOnFlip = true;
+        }
+    }
+}
 }
 
-
-int
-makeBuffer (rsxBuffer * buffer, u16 width, u16 height, int id)
+static void syncPPUGPU()
 {
-  int depth = sizeof(u32);
-  int pitch = depth * width;
-  int size = depth * width * height;
+    vu32 *label = (vu32*) gcmGetLabelAddress(GCM_PREPARED_BUFFER_INDEX);
+    while(((curr_fb + FRAME_BUFFER_COUNT - ((*label)>>8))%FRAME_BUFFER_COUNT) > MAX_BUFFER_QUEUE_SIZE) {
+        sys_event_t event;
 
-  buffer->ptr = (uint32_t*) rsxMemalign (64, size);
-
-  if (buffer->ptr == NULL)
-    goto error;
-
-  if (rsxAddressToOffset (buffer->ptr, &buffer->offset) != 0)
-    goto error;
-
-  /* Register the display buffer with the RSX */
-  if (gcmSetDisplayBuffer (id, buffer->offset, pitch, width, height) != 0)
-    goto error;
-
-  buffer->width = width;
-  buffer->height = height;
-  buffer->id = id;
-
-  return TRUE;
-
- error:
-  if (buffer->ptr != NULL)
-    rsxFree (buffer->ptr);
-
-  return FALSE;
+        sysEventQueueReceive(flipEventQueue, &event, 0);
+        sysEventQueueDrain(flipEventQueue);
+    }
 }
 
-int
-getResolution (u16 *width, u16 *height)
+static void waitRSXFinish()
 {
-  videoState state;
-  videoResolution resolution;
+	rsxSetWriteBackendLabel(gGcmContext,GCM_WAIT_LABEL_INDEX,sLabelVal);
 
-  /* Get the state of the display */
-  if (videoGetState (0, 0, &state) == 0 &&
-      videoGetResolution (state.displayMode.resolution, &resolution) == 0) {
-    if (width)
-      *width = resolution.width;
-    if (height)
-      *height = resolution.height;
+	rsxFlushBuffer(gGcmContext);
 
-    return TRUE;
-  }
-  return FALSE;
+	while(*(vu32*)gcmGetLabelAddress(GCM_WAIT_LABEL_INDEX)!=sLabelVal)
+		usleep(30);
+
+	++sLabelVal;
 }
 
-gcmContextData *
-initScreen (void *host_addr, u32 size)
+static void waitRSXIdle()
 {
-  gcmContextData *context = NULL; /* Context to keep track of the RSX buffer. */
-  videoState state;
-  videoConfiguration vconfig;
-  videoResolution res; /* Screen Resolution */
+	rsxSetWriteBackendLabel(gGcmContext,GCM_WAIT_LABEL_INDEX,sLabelVal);
+	rsxSetWaitLabel(gGcmContext,GCM_WAIT_LABEL_INDEX,sLabelVal);
 
-  /* Initilise Reality, which sets up the command buffer and shared IO memory */
-  context = rsxInit (CB_SIZE, size, host_addr);
-  if (context == NULL)
-    goto error;
+	++sLabelVal;
 
-  /* Get the state of the display */
-  if (videoGetState (0, 0, &state) != 0)
-    goto error;
-
-  /* Make sure display is enabled */
-  if (state.state != 0)
-    goto error;
-
-  /* Get the current resolution */
-  if (videoGetResolution (state.displayMode.resolution, &res) != 0)
-    goto error;
-
-  /* Configure the buffer format to xRGB */
-  memset (&vconfig, 0, sizeof(videoConfiguration));
-  vconfig.resolution = state.displayMode.resolution;
-  vconfig.format = VIDEO_BUFFER_FORMAT_XRGB;
-  vconfig.pitch = res.width * sizeof(u32);
-  vconfig.aspect = state.displayMode.aspect;
-
-  waitRSXIdle(context);
-
-  if (videoConfigure (0, &vconfig, NULL, 0) != 0)
-    goto error;
-
-  if (videoGetState (0, 0, &state) != 0)
-    goto error;
-
-  gcmSetFlipMode (GCM_FLIP_VSYNC); // Wait for VSYNC to flip
-
-  depth_pitch = res.width * sizeof(u32);
-  depth_buffer = (u32 *) rsxMemalign (64, (res.height * depth_pitch)* 2);
-  rsxAddressToOffset (depth_buffer, &depth_offset);
-
-  gcmResetFlipStatus();
-
-  return context;
-
- error:
-  if (context)
-    rsxFinish (context, 0);
-
-  if (host_addr)
-    free (host_addr);
-
-  return NULL;
+	waitRSXFinish();
 }
 
-
-static void
-waitFinish(gcmContextData *context, u32 sLabelVal)
+void initVideoConfiguration()
 {
-  rsxSetWriteBackendLabel (context, GCM_LABEL_INDEX, sLabelVal);
+    s32 rval = 0;
+    s32 resId = 0;
 
-  rsxFlushBuffer (context);
+    for (size_t i=0;i < RESOLUTION_ID_COUNT;i++) {
+        rval = videoGetResolutionAvailability(VIDEO_PRIMARY, sResolutionIds[i], VIDEO_ASPECT_AUTO, 0);
+        if (rval != 1) continue;
 
-  while(*(vu32 *) gcmGetLabelAddress (GCM_LABEL_INDEX) != sLabelVal)
-    usleep(30);
+        resId = sResolutionIds[i];
+        rval = videoGetResolution(resId, &vResolution);
+        if(!rval) break;
+    }
 
-  sLabelVal++;
+    if(rval) {
+        printf("Error: videoGetResolutionAvailability failed. No usable resolution.\n");
+        exit(1);
+    }
+
+    videoConfiguration config = {
+        (u8)resId,
+        VIDEO_BUFFER_FORMAT_XRGB,
+        VIDEO_ASPECT_AUTO,
+        {0,0,0,0,0,0,0,0,0},
+        gcmGetTiledPitchSize(vResolution.width*4)
+    };
+
+    rval = videoConfigure(VIDEO_PRIMARY, &config, NULL, 0);
+    if(rval) {
+        printf("Error: videoConfigure failed.\n");
+        exit(1);
+    }
+
+    videoState state;
+
+    rval = videoGetState(VIDEO_PRIMARY, 0, &state);
+    switch(state.displayMode.aspect) {
+        case VIDEO_ASPECT_4_3:
+            aspect_ratio = 4.0f/3.0f;
+            break;
+        case VIDEO_ASPECT_16_9:
+            aspect_ratio = 16.0f/9.0f;
+            break;
+        default:
+            printf("unknown aspect ratio %x\n", state.displayMode.aspect);
+            aspect_ratio = 16.0f/9.0f;
+            break;
+    }
+
+    display_height = vResolution.height;
+    display_width = vResolution.width;
 }
 
-static void
-waitRSXIdle(gcmContextData *context)
+void initFlipEvent()
 {
-  u32 sLabelVal = 1;
+    sys_event_queue_attr_t queueAttr = { SYS_EVENT_QUEUE_PRIO, SYS_EVENT_QUEUE_PPU, "\0" };
 
-  rsxSetWriteBackendLabel (context, GCM_LABEL_INDEX, sLabelVal);
-  rsxSetWaitLabel (context, GCM_LABEL_INDEX, sLabelVal);
+    sysEventQueueCreate(&flipEventQueue, &queueAttr, SYS_EVENT_QUEUE_KEY_LOCAL, 32);
+    sysEventPortCreate(&flipEventPort, SYS_EVENT_PORT_LOCAL, SYS_EVENT_PORT_NO_NAME);
+    sysEventPortConnectLocal(flipEventPort, flipEventQueue);
 
-  sLabelVal++;
-
-  waitFinish(context, sLabelVal);
+    gcmSetFlipHandler(flipHandler);
+    gcmSetVBlankHandler(vblankHandler);
 }
 
-void
-setRenderTarget(gcmContextData *context, rsxBuffer *buffer)
+void initRenderTarget()
 {
-  gcmSurface sf;
+    memset(&surface, 0, sizeof(gcmSurface));
 
-  sf.colorFormat = GCM_TF_COLOR_X8R8G8B8;
-  sf.colorTarget = GCM_TF_TARGET_0;
-  sf.colorLocation[0] = GCM_LOCATION_RSX;
-  sf.colorOffset[0] = buffer->offset;
-  sf.colorPitch[0] = depth_pitch;
+	surface.colorFormat		= GCM_SURFACE_X8R8G8B8;
+	surface.colorTarget		= GCM_SURFACE_TARGET_0;
+	surface.colorLocation[0]	= GCM_LOCATION_RSX;
+	surface.colorOffset[0]	= color_offset[curr_fb];
+	surface.colorPitch[0]	= color_pitch;
 
-  sf.colorLocation[1] = GCM_LOCATION_RSX;
-  sf.colorLocation[2] = GCM_LOCATION_RSX;
-  sf.colorLocation[3] = GCM_LOCATION_RSX;
-  sf.colorOffset[1] = 0;
-  sf.colorOffset[2] = 0;
-  sf.colorOffset[3] = 0;
-  sf.colorPitch[1] = 64;
-  sf.colorPitch[2] = 64;
-  sf.colorPitch[3] = 64;
+    for(u32 i=1; i< GCM_MAX_MRT_COUNT;i++) {
+        surface.colorLocation[i]	= GCM_LOCATION_RSX;
+        surface.colorOffset[i]		= color_offset[curr_fb];
+        surface.colorPitch[i]		= 64;
+    }
 
-  sf.depthFormat = GCM_TF_ZETA_Z16;
-  sf.depthLocation = GCM_LOCATION_RSX;
-  sf.depthOffset = depth_offset;
-  sf.depthPitch = depth_pitch;
+	surface.depthFormat		= GCM_SURFACE_ZETA_Z24S8;
+	surface.depthLocation	= GCM_LOCATION_RSX;
+	surface.depthOffset		= depth_offset;
+	surface.depthPitch		= depth_pitch;
 
-  sf.type = GCM_TF_TYPE_LINEAR;
-  sf.antiAlias 	= GCM_TF_CENTER_1;
+	surface.type			= GCM_SURFACE_TYPE_LINEAR;
+	surface.antiAlias		= GCM_SURFACE_CENTER_1;
 
-  sf.width = buffer->width;
-  sf.height = buffer->height;
-  sf.x = 0;
-  sf.y = 0;
+	surface.width			= display_width;
+	surface.height			= display_height;
+	surface.x				= 0;
+	surface.y				= 0;
+}
 
-  rsxSetSurface (context, &sf);
+void setRenderTarget(u32 index)
+{
+	surface.colorOffset[0]	= color_offset[index];
+	rsxSetSurface(gGcmContext,&surface);
+}
+
+void initDefaultStateCommands()
+{
+    rsxSetCurrentBuffer(nullptr, (u32*)state_buffer, HOST_STATE_CB_SIZE);
+    {
+        rsxSetBlendEnable(gGcmContext, GCM_FALSE);
+        rsxSetBlendFunc(gGcmContext, GCM_ONE, GCM_ZERO, GCM_ONE, GCM_ZERO);
+        rsxSetBlendEquation(gGcmContext, GCM_FUNC_ADD, GCM_FUNC_ADD);
+        rsxSetDepthWriteEnable(gGcmContext, GCM_TRUE);
+        rsxSetDepthFunc(gGcmContext, GCM_LESS);
+        rsxSetDepthTestEnable(gGcmContext, GCM_TRUE);
+        rsxSetClearDepthStencil(gGcmContext,0xffffff00);
+  	    rsxSetShadeModel(gGcmContext,GCM_SHADE_MODEL_SMOOTH);
+        rsxSetFrontFace(gGcmContext, GCM_FRONTFACE_CCW);
+        rsxSetClearReport(gGcmContext, GCM_ZPASS_PIXEL_CNT);
+        rsxSetZControl(gGcmContext, GCM_TRUE, GCM_FALSE, GCM_FALSE);
+        rsxSetZCullControl(gGcmContext, GCM_ZCULL_LESS, GCM_ZCULL_LONES);
+        rsxSetSCullControl(gGcmContext, GCM_SCULL_SFUNC_LESS, 1, 0xff);
+        rsxSetColorMaskMrt(gGcmContext, 0);
+    	rsxSetColorMask(gGcmContext,GCM_COLOR_MASK_B |
+							GCM_COLOR_MASK_G |
+							GCM_COLOR_MASK_R |
+							GCM_COLOR_MASK_A);
+        rsxSetReturnCommand(gGcmContext);
+    }
+    rsxSetDefaultCommandBuffer(nullptr);
+}
+
+void initScreen(u32 hostBufferSize)
+{
+    u32 zs_depth = 4;
+    u32 color_depth = 4;
+    u32 bufferSize = rsxAlign(HOST_ADDR_ALIGNMENT, (DEFAULT_CB_SIZE + HOST_STATE_CB_SIZE + hostBufferSize));
+
+    gcmInitDefaultFifoMode(GCM_DEFAULT_FIFO_MODE_CONDITIONAL);
+
+    void *hostAddr = memalign(HOST_ADDR_ALIGNMENT, bufferSize);
+    rsxInit(nullptr, DEFAULT_CB_SIZE, bufferSize, hostAddr);
+
+    state_buffer = (void*)((intptr_t)hostAddr + DEFAULT_CB_SIZE);
+    rsxAddressToOffset(state_buffer, &state_offset);
+    //printf("state_cmd: %p [%08x]\n", state_buffer, state_offset);
+
+    initDefaultStateCommands();
+    initVideoConfiguration();
+
+    waitRSXIdle();
+
+    gcmSetFlipMode(GCM_FLIP_HSYNC);
+
+	color_pitch = gcmGetTiledPitchSize(display_width*color_depth);
+    depth_pitch = gcmGetTiledPitchSize(display_width*zs_depth);
+
+    u32 tileIndex = 0;
+    u32 bufferHeight = rsxAlign(GCM_TILE_LOCAL_ALIGN_HEIGHT, display_height);
+    u32 colorBufferSize = bufferHeight*color_pitch;
+    u32 depthBufferSize = bufferHeight*depth_pitch;
+    for (u32 i=0; i < FRAME_BUFFER_COUNT;i++, tileIndex++) {
+       bufferSize = rsxAlign(GCM_TILE_ALIGN_OFFSET, colorBufferSize);
+       color_buffer[i] = rsxMemalign(GCM_TILE_ALIGN_SIZE, bufferSize);
+       rsxAddressToOffset(color_buffer[i], &color_offset[i]);
+       gcmSetDisplayBuffer(i, color_offset[i], color_pitch, display_width, display_height);
+       gcmSetTileInfo(tileIndex, GCM_LOCATION_RSX, color_offset[i], bufferSize, color_pitch, GCM_COMPMODE_DISABLED, 0, 0);
+       gcmBindTile(tileIndex);
+       //printf("fb[%d]: %p (%08x) [%dx%d] %d\n", i, color_buffer[i], color_offset[i], display_width, display_height, color_pitch);
+    }
+
+    bufferSize = rsxAlign(GCM_TILE_ALIGN_OFFSET, depthBufferSize);
+    depth_buffer = rsxMemalign(GCM_TILE_ALIGN_SIZE, bufferSize);
+    rsxAddressToOffset(depth_buffer, &depth_offset);
+    gcmSetTileInfo(tileIndex, GCM_LOCATION_RSX, depth_offset, bufferSize, depth_pitch, GCM_COMPMODE_Z32_SEPSTENCIL, 0, 2);
+    gcmBindTile(tileIndex);
+    
+    gcmSetZcull(0, depth_offset, rsxAlign(64, display_width), rsxAlign(64, display_height), 0, GCM_ZCULL_Z24S8, GCM_SURFACE_CENTER_1, GCM_ZCULL_LESS, GCM_ZCULL_LONES, GCM_SCULL_SFUNC_LESS, 1, 0xff);
+
+    for (u32 i=0;i < FRAME_BUFFER_COUNT;i++) {
+        *((vu32*) gcmGetLabelAddress(GCM_BUFFER_STATUS_INDEX + i)) = BUFFER_IDLE;
+    }
+    *((vu32*) gcmGetLabelAddress(GCM_PREPARED_BUFFER_INDEX)) = (fbOnDisplay << 8);
+    *((vu32*) gcmGetLabelAddress(GCM_BUFFER_STATUS_INDEX + fbOnDisplay)) = BUFFER_BUSY;
+
+    curr_fb = (fbOnDisplay + 1)%FRAME_BUFFER_COUNT;
+
+    initFlipEvent();
+    initRenderTarget();
+
+    rsxSetWriteCommandLabel(gGcmContext, GCM_BUFFER_STATUS_INDEX + curr_fb, BUFFER_BUSY);
+}
+
+void flip()
+{
+    s32 qid = gcmSetPrepareFlip(gGcmContext, curr_fb);
+    while (qid < 0) {
+        usleep(100);
+        qid = gcmSetPrepareFlip(gGcmContext, curr_fb);
+    }
+
+    rsxSetWriteBackendLabel(gGcmContext, GCM_PREPARED_BUFFER_INDEX, ((curr_fb << 8) | qid));
+    rsxFlushBuffer(gGcmContext);
+
+    syncPPUGPU();
+
+    curr_fb = (curr_fb + 1)%FRAME_BUFFER_COUNT;
+
+    rsxSetWaitLabel(gGcmContext, GCM_BUFFER_STATUS_INDEX + curr_fb, BUFFER_IDLE);
+    rsxSetWriteCommandLabel(gGcmContext, GCM_BUFFER_STATUS_INDEX + curr_fb, BUFFER_BUSY);
+
+    setRenderTarget(curr_fb);
+}
+
+void finish()
+{
+	rsxFinish(gGcmContext,1);
+
+    u32 data = *((vu32*) gcmGetLabelAddress(GCM_PREPARED_BUFFER_INDEX));
+    u32 lastBuffer = (data >> 8);
+    while (lastBuffer != fbOnDisplay)
+        usleep(100);
 }

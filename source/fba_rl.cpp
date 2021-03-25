@@ -46,7 +46,7 @@ Custom RETROARCH changes for FB Alpha RL (v1.XX):
 //#define FBARL_DEBUG
 #include <lv2/sysfs.h>
 #include <net/netctl.h>
-#include "main.h"
+#include "capp.h"
 
 c_fbaRL* fbaRL;
 

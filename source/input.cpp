@@ -1,7 +1,7 @@
 // ---------------------------------------------------------------------
 // FB Neo Retro Loader Plus (CaptainCPS-X, 2013) - (CrystalCT, 2020)
 // ---------------------------------------------------------------------
-#include "main.h"
+#include "capp.h"
 #include <io/pad.h>
 
 void CapApp::InputFrameStart()

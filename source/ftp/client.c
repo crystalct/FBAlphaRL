@@ -52,7 +52,7 @@ void client_thread(void *conn_s_p)
 	int authorized = 0;		// 1 if successfully logged in
 	long long rest = 0;		// for resuming transfers
 	
-	char temp[512];			// temporary storage of strings
+	char temp[1110];			// temporary storage of strings
 	char expectcmd[16];		// for commands like RNFR, USER, etc.
 	char cwd[256];			// current working directory
 	
